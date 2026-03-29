@@ -5,13 +5,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Fetch HubSpot avec retry automatique sur 429
 async function hubspotFetch(url, options = {}, retries = 5) {
+  const { headers: _, ...restOptions } = options; // on ignore tout headers entrant
   for (let attempt = 1; attempt <= retries; attempt++) {
     const res = await fetch(url, {
-      ...options,
+      ...restOptions,
       headers: {
         Authorization: `Bearer ${HUBSPOT_TOKEN}`,
-        "Content-Type": "application/json",
-        ...(options.headers || {})
+        "Content-Type": "application/json"
       }
     });
 
