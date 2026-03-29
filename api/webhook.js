@@ -13,6 +13,7 @@ export default async function handler(req, res) {
   try {
     // ── 1. Cherche la liste existante via API v1 ─────────────────────────────
     let listId = null;
+    let listJustCreated = false;
     let offset = 0;
     let found = false;
 
@@ -61,6 +62,7 @@ export default async function handler(req, res) {
         console.log("Refetched listId after duplicate:", listId);
       } else {
         listId = created.listId;
+        listJustCreated = true;
         console.log("Created listId:", listId);
       }
     }
@@ -79,15 +81,24 @@ export default async function handler(req, res) {
     const addText = await addRes.text();
     console.log("Add status:", addRes.status, "body:", addText.substring(0, 300));
 
-    // ── 4. URL HubSpot + webhook retour Clay ─────────────────────────────────
+    // ── 4. URL HubSpot de la liste ────────────────────────────────────────────
     const list_url = `https://app.hubspot.com/contacts/${HUBSPOT_ACCOUNT_ID}/lists/${listId}`;
 
-    if (CLAY_WEBHOOK_URL) {
-      await fetch(CLAY_WEBHOOK_URL, {
+    // ── 5. Webhook Clay — uniquement à la création de la liste ───────────────
+    if (listJustCreated) {
+      const clayWebhookUrl = "https://api.clay.com/v3/sources/webhook/pull-in-data-from-a-webhook-8bbd1005-a299-4e85-9387-08701e82a8ea";
+      await fetch(clayWebhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ import_code, list_name, list_id: listId, list_url, contact_id, status: "success" })
+        body: JSON.stringify({
+          import_code,
+          list_name,
+          list_id: listId,
+          list_url,
+          status: "list_created"
+        })
       });
+      console.log("Clay webhook sent for new list:", list_name);
     }
 
     return res.status(200).json({ success: true, list_id: listId, list_url });
