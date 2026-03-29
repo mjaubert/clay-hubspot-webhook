@@ -47,9 +47,9 @@ export default async function handler(req, res) {
       // Comparaison exacte du nom (trim pour éviter les espaces parasites)
       const existing = searchData.lists?.find(l => l.name?.trim() === list_name?.trim());
       if (existing) {
-        // Utiliser l'ILS list ID pour les appels memberships
+        // ilsListId est l'ID utilisé par l'API v1 pour ajouter des membres
         listId = existing.ilsListId || existing.listId;
-        console.log("Found existing listId:", listId);
+        console.log("Found existing listId:", listId, "ilsListId:", existing.ilsListId, "listId:", existing.listId);
       }
 
       if (existing) {
@@ -70,7 +70,8 @@ export default async function handler(req, res) {
         });
         const created = await createRes.json();
         console.log("HubSpot create list response:", JSON.stringify(created));
-        listId = created?.list?.listId || created?.listId;
+        // l'ilsListId est l'ID utilisé par l'API v1 pour ajouter des membres
+        listId = created?.list?.ilsListId || created?.list?.listId || created?.listId;
         if (!listId) throw new Error("HubSpot list creation failed: " + JSON.stringify(created));
         console.log("Created listId:", listId);
       }
