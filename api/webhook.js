@@ -46,6 +46,10 @@ export default async function handler(req, res) {
       console.log("HubSpot list search:", JSON.stringify(searchData?.lists?.map(l => l.name)));
       // Comparaison exacte du nom (trim pour éviter les espaces parasites)
       const existing = searchData.lists?.find(l => l.name?.trim() === list_name?.trim());
+      if (existing) {
+        listId = existing.listId;
+        console.log("Found existing listId:", listId);
+      }
 
       if (existing) {
         listId = existing.listId;
@@ -65,9 +69,10 @@ export default async function handler(req, res) {
         });
         const created = await createRes.json();
         console.log("HubSpot create list response:", JSON.stringify(created));
-        // API v3 retourne { list: { listId: ... } }
+        // API v3 retourne { list: { listId: "20102", ... } } — utiliser listId (pas l'object id)
         listId = created?.list?.listId || created?.listId;
         if (!listId) throw new Error("HubSpot list creation failed: " + JSON.stringify(created));
+        console.log("Created listId:", listId);
       }
 
       listCache[import_code] = listId;
