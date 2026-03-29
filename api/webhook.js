@@ -25,42 +25,57 @@ export default async function handler(req, res) {
     let listId = listCache[import_code];
 
     if (!listId) {
-      // Cherche si la liste existe déjà dans HubSpot
+      // Cherche si la liste existe déjà (API v3)
       const searchRes = await fetch(
-        `https://api.hubapi.com/contacts/v1/lists?count=250`,
-        { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } }
-      );
-      const { lists = [] } = await searchRes.json();
-      const existing = lists.find(l => l.name === list_name);
-
-      if (existing) {
-        listId = existing.listId;
-      } else {
-        // Crée la liste (une seule fois)
-        const createRes = await fetch("https://api.hubapi.com/contacts/v1/lists", {
+        `https://api.hubapi.com/crm/v3/lists/search`,
+        {
           method: "POST",
           headers: {
             Authorization: `Bearer ${HUBSPOT_TOKEN}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ name: list_name, dynamic: false })
+          body: JSON.stringify({
+            query: list_name,
+            count: 10,
+            offset: 0,
+            processingTypes: ["MANUAL"]
+          })
+        }
+      );
+      const searchData = await searchRes.json();
+      const existing = searchData.lists?.find(l => l.name === list_name);
+
+      if (existing) {
+        listId = existing.listId;
+      } else {
+        // Crée la liste (API v3)
+        const createRes = await fetch("https://api.hubapi.com/crm/v3/lists/", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            name: list_name,
+            objectTypeId: "0-1",
+            processingType: "MANUAL"
+          })
         });
         const created = await createRes.json();
         listId = created.listId;
       }
 
-      // Mémorise pour les prochains contacts du même import_code
       listCache[import_code] = listId;
     }
 
-    // ── 2. Ajouter le contact à la liste ─────────────────────────────────────
-    await fetch(`https://api.hubapi.com/contacts/v1/lists/${listId}/add`, {
-      method: "POST",
+    // ── 2. Ajouter le contact à la liste (API v3) ─────────────────────────────
+    await fetch(`https://api.hubapi.com/crm/v3/lists/${listId}/memberships/add`, {
+      method: "PUT",
       headers: {
         Authorization: `Bearer ${HUBSPOT_TOKEN}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ vids: [parseInt(contact_id)] })
+      body: JSON.stringify([parseInt(contact_id)])
     });
 
     // ── 3. Construire l'URL HubSpot de la liste ───────────────────────────────
