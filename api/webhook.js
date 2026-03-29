@@ -3,60 +3,63 @@ const HUBSPOT_ACCOUNT_ID = process.env.HUBSPOT_ACCOUNT_ID;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Fetch HubSpot avec retry automatique sur 429
-async function hubspotFetch(url, options = {}, retries = 5) {
-  const { headers: _, ...restOptions } = options; // on ignore tout headers entrant
+async function hubspotFetch(url, method = "GET", body = null, retries = 5) {
   for (let attempt = 1; attempt <= retries; attempt++) {
-    const res = await fetch(url, {
-      ...restOptions,
+    const opts = {
+      method,
       headers: {
         Authorization: `Bearer ${HUBSPOT_TOKEN}`,
         "Content-Type": "application/json"
       }
-    });
+    };
+    if (body) opts.body = JSON.stringify(body);
+
+    const res = await fetch(url, opts);
 
     if (res.status === 429) {
-      const retryAfter = parseInt(res.headers.get("Retry-After") || "10") * 1000;
-      console.log(`429 rate limit — attempt ${attempt}/${retries}, waiting ${retryAfter}ms`);
-      await sleep(retryAfter);
+      const wait = parseInt(res.headers.get("Retry-After") || "10") * 1000;
+      console.log(`429 rate limit — attempt ${attempt}/${retries}, waiting ${wait}ms`);
+      await sleep(wait);
       continue;
     }
 
     if (res.status === 401 || res.status === 403) {
-      const body = await res.text();
-      throw new Error(`HubSpot auth error ${res.status}: ${body.substring(0, 200)}`);
+      const text = await res.text();
+      throw new Error(`HubSpot auth error ${res.status}: ${text.substring(0, 300)}`);
     }
 
     return res;
   }
-  throw new Error("HubSpot rate limit dépassé après plusieurs tentatives");
+  throw new Error("Rate limit dépassé après plusieurs tentatives");
 }
 
-// Recherche une liste par nom exact via l'API de recherche (v1 /lists/search)
-// Beaucoup plus rapide que paginer toutes les listes
+// Utilise l'API v3 qui supporte le filtre par nom directement
 async function findListByName(list_name) {
-  const encoded = encodeURIComponent(list_name.trim());
-  const res = await hubspotFetch(
-    `https://api.hubapi.com/contacts/v1/lists/search?query=${encoded}&count=10&offset=0`
-  );
+  const url = `https://api.hubapi.com/crm/v3/lists/?listType=STATIC&count=500`;
+  let after = null;
+  let page = 0;
 
-  if (!res.ok) {
-    const body = await res.text();
-    console.log("findListByName search failed:", res.status, body.substring(0, 200));
-    return null;
+  while (true) {
+    page++;
+    const pagedUrl = after ? `${url}&after=${after}` : url;
+    const res = await hubspotFetch(pagedUrl);
+    const data = await res.json();
+
+    console.log(`findList v3 page ${page} — status: ${res.status}, count: ${data.lists?.length}, hasMore: ${!!data.paging?.next}`);
+
+    const match = data.lists?.find(l => l.name?.trim() === list_name.trim());
+    if (match) {
+      console.log("findList — found:", match.listId, match.name);
+      return match.listId;
+    }
+
+    if (!data.paging?.next?.after) {
+      console.log("findList — not found after", page, "pages");
+      return null;
+    }
+
+    after = data.paging.next.after;
   }
-
-  const data = await res.json();
-  console.log(`findListByName — status: ${res.status}, results: ${data.lists?.length}`);
-
-  const match = data.lists?.find(l => l.name?.trim() === list_name.trim());
-  if (match) {
-    console.log("findListByName — found:", match.listId, match.name);
-    return match.listId;
-  }
-
-  console.log("findListByName — not found for:", list_name);
-  return null;
 }
 
 export default async function handler(req, res) {
@@ -68,9 +71,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // DEBUG TEMPORAIRE — à supprimer après diagnostic
-    console.log("TOKEN_DEBUG — length:", HUBSPOT_TOKEN?.length, "| starts:", HUBSPOT_TOKEN?.substring(0, 10), "| ends:", HUBSPOT_TOKEN?.slice(-4));
-
     await sleep(Math.random() * 500);
 
     // ── 1. Cherche la liste par nom ───────────────────────────────────────────
@@ -80,10 +80,11 @@ export default async function handler(req, res) {
 
     // ── 2. Crée la liste si elle n'existe pas ────────────────────────────────
     if (!listId) {
-      const createRes = await hubspotFetch("https://api.hubapi.com/contacts/v1/lists", {
-        method: "POST",
-        body: JSON.stringify({ name: list_name, dynamic: false })
-      });
+      const createRes = await hubspotFetch(
+        "https://api.hubapi.com/contacts/v1/lists",
+        "POST",
+        { name: list_name, dynamic: false }
+      );
 
       const rawCreate = await createRes.text();
       let created = {};
@@ -95,7 +96,6 @@ export default async function handler(req, res) {
         listJustCreated = true;
         console.log("Step 2 — created listId:", listId);
       } else {
-        // Race condition ou doublon → retry findListByName avec backoff
         console.log("Step 2 — create failed, retrying search...");
         for (let attempt = 1; attempt <= 5; attempt++) {
           await sleep(600 * attempt);
@@ -111,10 +111,8 @@ export default async function handler(req, res) {
     // ── 3. Ajoute le contact à la liste ──────────────────────────────────────
     const addRes = await hubspotFetch(
       `https://api.hubapi.com/contacts/v1/lists/${listId}/add`,
-      {
-        method: "POST",
-        body: JSON.stringify({ vids: [parseInt(contact_id)] })
-      }
+      "POST",
+      { vids: [parseInt(contact_id)] }
     );
     const addText = await addRes.text();
     console.log("Step 3 — add status:", addRes.status, addText.substring(0, 300));
