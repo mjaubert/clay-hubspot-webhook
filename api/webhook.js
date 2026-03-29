@@ -63,8 +63,9 @@ export default async function handler(req, res) {
         });
         const created = await createRes.json();
         console.log("HubSpot create list response:", JSON.stringify(created));
-        if (!created.listId) throw new Error("HubSpot list creation failed: " + JSON.stringify(created));
-        listId = created.listId;
+        // API v3 retourne { list: { listId: ... } }
+        listId = created?.list?.listId || created?.listId;
+        if (!listId) throw new Error("HubSpot list creation failed: " + JSON.stringify(created));
       }
 
       listCache[import_code] = listId;
