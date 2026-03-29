@@ -80,7 +80,7 @@ export default async function handler(req, res) {
         Authorization: `Bearer ${HUBSPOT_TOKEN}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify([parseInt(contact_id)])
+      body: JSON.stringify({ recordIdsToAdd: [parseInt(contact_id)], recordIdsToRemove: [] })
     });
     const addData = await addRes.json();
     console.log("HubSpot add member response:", JSON.stringify(addData));
