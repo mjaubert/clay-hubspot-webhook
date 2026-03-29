@@ -40,7 +40,7 @@ async function findListByName(list_name) {
   return match ? match.listId : null;
 }
 
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   const { contact_id, import_code, list_name } = req.body;
