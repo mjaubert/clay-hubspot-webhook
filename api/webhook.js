@@ -68,6 +68,9 @@ export default async function handler(req, res) {
   }
 
   try {
+    // DEBUG TEMPORAIRE — à supprimer après diagnostic
+    console.log("TOKEN_DEBUG — length:", HUBSPOT_TOKEN?.length, "| starts:", HUBSPOT_TOKEN?.substring(0, 10), "| ends:", HUBSPOT_TOKEN?.slice(-4));
+
     await sleep(Math.random() * 500);
 
     // ── 1. Cherche la liste par nom ───────────────────────────────────────────
