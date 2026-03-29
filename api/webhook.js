@@ -1,44 +1,6 @@
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 const HUBSPOT_ACCOUNT_ID = process.env.HUBSPOT_ACCOUNT_ID;
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function hubspotFetch(url, method = "GET", body = null, retries = 5) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const opts = {
-      method,
-      headers: {
-        Authorization: `Bearer ${HUBSPOT_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    };
-    if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(url, opts);
-
-    if (res.status === 429) {
-      const wait = parseInt(res.headers.get("Retry-After") || "10") * 1000;
-      console.log(`429 — attempt ${attempt}/${retries}, waiting ${wait}ms`);
-      await sleep(wait);
-      continue;
-    }
-    return res;
-  }
-  throw new Error("Rate limit dépassé");
-}
-
-async function findListByName(list_name) {
-  const encoded = encodeURIComponent(list_name.trim());
-  const res = await hubspotFetch(
-    `https://api.hubapi.com/contacts/v1/lists/search?query=${encoded}&count=20&offset=0`
-  );
-  const text = await res.text();
-  console.log(`findList — status: ${res.status} body: ${text.substring(0, 400)}`);
-  if (!res.ok) return null;
-  let data;
-  try { data = JSON.parse(text); } catch { return null; }
-  const match = data.lists?.find(l => l.name?.trim() === list_name.trim());
-  return match ? match.listId : null;
-}
+const CLAY_WEBHOOK_URL = process.env.CLAY_WEBHOOK_URL;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
@@ -48,73 +10,116 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Champs manquants: contact_id, import_code, list_name" });
   }
 
-  console.log("START — contact_id:", contact_id, "list_name:", list_name, "token_length:", HUBSPOT_TOKEN?.length);
-
   try {
-    await sleep(Math.random() * 500);
+    // Délai aléatoire pour éviter la race condition entre instances parallèles
+    await new Promise(r => setTimeout(r, Math.random() * 1000));
 
-    // ── 1. Cherche la liste par nom ───────────────────────────────────────────
-    let listId = await findListByName(list_name);
+    // ── 1. Cherche la liste existante via API v1 ─────────────────────────────
+    let listId = null;
     let listJustCreated = false;
-    console.log("Step 1 — listId:", listId);
+    let offset = 0;
+    let found = false;
+
+    while (!found) {
+      const searchRes = await fetch(
+        `https://api.hubapi.com/contacts/v1/lists?count=250&offset=${offset}`,
+        { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } }
+      );
+      const searchData = await searchRes.json();
+      const existing = searchData.lists?.find(l => l.name?.trim() === list_name?.trim());
+
+      if (existing) {
+        listId = existing.listId;
+        console.log("Found existing list:", listId, existing.name);
+        found = true;
+      } else if (!searchData["has-more"]) {
+        break;
+      } else {
+        offset += 250;
+      }
+    }
 
     // ── 2. Crée la liste si elle n'existe pas ────────────────────────────────
     if (!listId) {
-      const createRes = await hubspotFetch(
-        "https://api.hubapi.com/contacts/v1/lists",
-        "POST",
-        { name: list_name, dynamic: false }
-      );
-      const rawCreate = await createRes.text();
-      let created = {};
-      try { created = JSON.parse(rawCreate); } catch {}
-      console.log("Step 2 — create status:", createRes.status, rawCreate.substring(0, 300));
+      const createRes = await fetch("https://api.hubapi.com/contacts/v1/lists", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ name: list_name, dynamic: false })
+      });
+      const created = await createRes.json();
+      console.log("Create status:", createRes.status, JSON.stringify(created));
 
-      if (createRes.status === 200 || createRes.status === 201) {
+      // Si la liste existe déjà (race condition entre instances parallèles)
+      if (createRes.status === 400 || createRes.status === 409) {
+        // Attendre un peu puis refetch
+        await new Promise(r => setTimeout(r, 500));
+        let refetchOffset = 0;
+        let refetchFound = false;
+        while (!refetchFound) {
+          const refetchRes = await fetch(
+            `https://api.hubapi.com/contacts/v1/lists?count=250&offset=${refetchOffset}`,
+            { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } }
+          );
+          const refetchData = await refetchRes.json();
+          const existing = refetchData.lists?.find(l => l.name?.trim() === list_name?.trim());
+          if (existing) {
+            listId = existing.listId;
+            console.log("Refetched listId after duplicate:", listId);
+            refetchFound = true;
+          } else if (!refetchData["has-more"]) {
+            break;
+          } else {
+            refetchOffset += 250;
+          }
+        }
+      } else {
         listId = created.listId;
         listJustCreated = true;
-        console.log("Step 2 — created listId:", listId);
-      } else {
-        for (let attempt = 1; attempt <= 5; attempt++) {
-          await sleep(600 * attempt);
-          listId = await findListByName(list_name);
-          console.log(`Step 2 — retry ${attempt}/5 — listId:`, listId);
-          if (listId) break;
-        }
+        console.log("Created listId:", listId);
       }
     }
 
     if (!listId) throw new Error("Impossible de récupérer le listId");
 
-    // ── 3. Ajoute le contact à la liste ──────────────────────────────────────
-    const addRes = await hubspotFetch(
-      `https://api.hubapi.com/contacts/v1/lists/${listId}/add`,
-      "POST",
-      { vids: [parseInt(contact_id)] }
-    );
+    // ── 3. Ajoute le contact à la liste via API v1 ───────────────────────────
+    const addRes = await fetch(`https://api.hubapi.com/contacts/v1/lists/${listId}/add`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ vids: [parseInt(contact_id)] })
+    });
     const addText = await addRes.text();
-    console.log("Step 3 — add status:", addRes.status, addText.substring(0, 300));
+    console.log("Add status:", addRes.status, "body:", addText.substring(0, 300));
 
     // ── 4. URL HubSpot de la liste ────────────────────────────────────────────
     const list_url = `https://app.hubspot.com/contacts/${HUBSPOT_ACCOUNT_ID}/lists/${listId}`;
 
     // ── 5. Webhook Clay — uniquement à la création de la liste ───────────────
     if (listJustCreated) {
-      const webhookRes = await fetch(
-        "https://api.clay.com/v3/sources/webhook/pull-in-data-from-a-webhook-8bbd1005-a299-4e85-9387-08701e82a8ea",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ import_code, list_name, list_id: listId, list_url, status: "list_created" })
-        }
-      );
-      console.log("Step 5 — Clay webhook status:", webhookRes.status);
+      const clayWebhookUrl = "https://api.clay.com/v3/sources/webhook/pull-in-data-from-a-webhook-8bbd1005-a299-4e85-9387-08701e82a8ea";
+      await fetch(clayWebhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          import_code,
+          list_name,
+          list_id: listId,
+          list_url,
+          status: "list_created"
+        })
+      });
+      console.log("Clay webhook sent for new list:", list_name);
     }
 
     return res.status(200).json({ success: true, list_id: listId, list_url });
 
   } catch (err) {
-    console.error("FATAL:", err.message);
+    console.error("Error:", err.message);
     return res.status(500).json({ error: err.message });
   }
 }
