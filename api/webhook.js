@@ -1,5 +1,3 @@
-export const maxDuration = 30; // Vercel Pro: 30s max au lieu de 10s par défaut
-
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 const HUBSPOT_ACCOUNT_ID = process.env.HUBSPOT_ACCOUNT_ID;
 
@@ -15,46 +13,34 @@ async function hubspotFetch(url, method = "GET", body = null, retries = 5) {
       }
     };
     if (body) opts.body = JSON.stringify(body);
-
     const res = await fetch(url, opts);
-    const status = res.status;
 
-    if (status === 429) {
+    if (res.status === 429) {
       const wait = parseInt(res.headers.get("Retry-After") || "10") * 1000;
-      console.log(`429 rate limit — attempt ${attempt}/${retries}, waiting ${wait}ms`);
+      console.log(`429 — attempt ${attempt}/${retries}, waiting ${wait}ms`);
       await sleep(wait);
       continue;
     }
-
     return res;
   }
-  throw new Error("Rate limit dépassé après plusieurs tentatives");
+  throw new Error("Rate limit dépassé");
 }
 
-// Recherche via v1 /lists/search — 1 seul appel, pas de pagination
 async function findListByName(list_name) {
   const encoded = encodeURIComponent(list_name.trim());
   const res = await hubspotFetch(
     `https://api.hubapi.com/contacts/v1/lists/search?query=${encoded}&count=20&offset=0`
   );
   const text = await res.text();
-  console.log(`findListByName — status: ${res.status} body: ${text.substring(0, 400)}`);
-
+  console.log(`findList — status: ${res.status} body: ${text.substring(0, 400)}`);
   if (!res.ok) return null;
-
   let data;
   try { data = JSON.parse(text); } catch { return null; }
-
   const match = data.lists?.find(l => l.name?.trim() === list_name.trim());
-  if (match) {
-    console.log("findListByName — found:", match.listId, match.name);
-    return match.listId;
-  }
-  console.log("findListByName — not found for:", list_name);
-  return null;
+  return match ? match.listId : null;
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   const { contact_id, import_code, list_name } = req.body;
@@ -89,7 +75,6 @@ export default async function handler(req, res) {
         listJustCreated = true;
         console.log("Step 2 — created listId:", listId);
       } else {
-        // Race condition → retry
         for (let attempt = 1; attempt <= 5; attempt++) {
           await sleep(600 * attempt);
           listId = await findListByName(list_name);
