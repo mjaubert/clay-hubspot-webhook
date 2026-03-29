@@ -1,7 +1,6 @@
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 const HUBSPOT_ACCOUNT_ID = process.env.HUBSPOT_ACCOUNT_ID;
 
-// Pause utilitaire
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Fetch HubSpot avec retry automatique sur 429
@@ -33,29 +32,31 @@ async function hubspotFetch(url, options = {}, retries = 5) {
   throw new Error("HubSpot rate limit dépassé après plusieurs tentatives");
 }
 
-// Parcourt toutes les pages et retourne le listId correspondant à list_name
-async function findList(list_name) {
-  let offset = 0;
-  let pageCount = 0;
-  while (true) {
-    pageCount++;
-    const res = await hubspotFetch(
-      `https://api.hubapi.com/contacts/v1/lists?count=250&offset=${offset}`
-    );
-    const data = await res.json();
-    console.log(`findList page ${pageCount} — status: ${res.status}, lists: ${data.lists?.length}, has-more: ${data["has-more"]}`);
+// Recherche une liste par nom exact via l'API de recherche (v1 /lists/search)
+// Beaucoup plus rapide que paginer toutes les listes
+async function findListByName(list_name) {
+  const encoded = encodeURIComponent(list_name.trim());
+  const res = await hubspotFetch(
+    `https://api.hubapi.com/contacts/v1/lists/search?query=${encoded}&count=10&offset=0`
+  );
 
-    const existing = data.lists?.find(l => l.name?.trim() === list_name?.trim());
-    if (existing) {
-      console.log("findList — found:", existing.listId, existing.name);
-      return existing.listId;
-    }
-    if (!data["has-more"]) {
-      console.log("findList — not found after", pageCount, "pages");
-      return null;
-    }
-    offset += 250;
+  if (!res.ok) {
+    const body = await res.text();
+    console.log("findListByName search failed:", res.status, body.substring(0, 200));
+    return null;
   }
+
+  const data = await res.json();
+  console.log(`findListByName — status: ${res.status}, results: ${data.lists?.length}`);
+
+  const match = data.lists?.find(l => l.name?.trim() === list_name.trim());
+  if (match) {
+    console.log("findListByName — found:", match.listId, match.name);
+    return match.listId;
+  }
+
+  console.log("findListByName — not found for:", list_name);
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -67,11 +68,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Délai aléatoire léger pour étaler les appels parallèles
     await sleep(Math.random() * 500);
 
-    // ── 1. Cherche la liste existante ─────────────────────────────────────────
-    let listId = await findList(list_name);
+    // ── 1. Cherche la liste par nom ───────────────────────────────────────────
+    let listId = await findListByName(list_name);
     let listJustCreated = false;
     console.log("Step 1 — listId:", listId);
 
@@ -92,11 +92,11 @@ export default async function handler(req, res) {
         listJustCreated = true;
         console.log("Step 2 — created listId:", listId);
       } else {
-        // Création échouée (doublon, race condition) → retry avec backoff
-        console.log("Step 2 — create failed, retrying findList...");
+        // Race condition ou doublon → retry findListByName avec backoff
+        console.log("Step 2 — create failed, retrying search...");
         for (let attempt = 1; attempt <= 5; attempt++) {
           await sleep(600 * attempt);
-          listId = await findList(list_name);
+          listId = await findListByName(list_name);
           console.log(`Step 2 — retry ${attempt}/5 — listId:`, listId);
           if (listId) break;
         }
