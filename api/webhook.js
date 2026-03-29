@@ -91,7 +91,7 @@ export default async function handler(req, res) {
       body: JSON.stringify([parseInt(contact_id)])
     });
     const addText = await addRes.text();
-    console.log("HubSpot add member status:", addRes.status, "body:", addText);
+    console.log("Add status:", addRes.status, "body:", addText.substring(0, 500));
 
     // ── 3. Construire l'URL HubSpot de la liste ───────────────────────────────
     const list_url = `https://app.hubspot.com/contacts/${HUBSPOT_ACCOUNT_ID}/lists/${listId}`;
