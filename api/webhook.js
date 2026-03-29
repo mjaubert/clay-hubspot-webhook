@@ -1,3 +1,5 @@
+export const maxDuration = 30; // Vercel Pro: 30s max au lieu de 10s par défaut
+
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 const HUBSPOT_ACCOUNT_ID = process.env.HUBSPOT_ACCOUNT_ID;
 
@@ -15,17 +17,13 @@ async function hubspotFetch(url, method = "GET", body = null, retries = 5) {
     if (body) opts.body = JSON.stringify(body);
 
     const res = await fetch(url, opts);
+    const status = res.status;
 
-    if (res.status === 429) {
+    if (status === 429) {
       const wait = parseInt(res.headers.get("Retry-After") || "10") * 1000;
       console.log(`429 rate limit — attempt ${attempt}/${retries}, waiting ${wait}ms`);
       await sleep(wait);
       continue;
-    }
-
-    if (res.status === 401 || res.status === 403) {
-      const text = await res.text();
-      throw new Error(`HubSpot auth error ${res.status}: ${text.substring(0, 300)}`);
     }
 
     return res;
@@ -33,33 +31,27 @@ async function hubspotFetch(url, method = "GET", body = null, retries = 5) {
   throw new Error("Rate limit dépassé après plusieurs tentatives");
 }
 
-// Utilise l'API v3 qui supporte le filtre par nom directement
+// Recherche via v1 /lists/search — 1 seul appel, pas de pagination
 async function findListByName(list_name) {
-  const url = `https://api.hubapi.com/crm/v3/lists/?listType=STATIC&count=500`;
-  let after = null;
-  let page = 0;
+  const encoded = encodeURIComponent(list_name.trim());
+  const res = await hubspotFetch(
+    `https://api.hubapi.com/contacts/v1/lists/search?query=${encoded}&count=20&offset=0`
+  );
+  const text = await res.text();
+  console.log(`findListByName — status: ${res.status} body: ${text.substring(0, 400)}`);
 
-  while (true) {
-    page++;
-    const pagedUrl = after ? `${url}&after=${after}` : url;
-    const res = await hubspotFetch(pagedUrl);
-    const data = await res.json();
+  if (!res.ok) return null;
 
-    console.log(`findList v3 page ${page} — status: ${res.status}, count: ${data.lists?.length}, hasMore: ${!!data.paging?.next}`);
+  let data;
+  try { data = JSON.parse(text); } catch { return null; }
 
-    const match = data.lists?.find(l => l.name?.trim() === list_name.trim());
-    if (match) {
-      console.log("findList — found:", match.listId, match.name);
-      return match.listId;
-    }
-
-    if (!data.paging?.next?.after) {
-      console.log("findList — not found after", page, "pages");
-      return null;
-    }
-
-    after = data.paging.next.after;
+  const match = data.lists?.find(l => l.name?.trim() === list_name.trim());
+  if (match) {
+    console.log("findListByName — found:", match.listId, match.name);
+    return match.listId;
   }
+  console.log("findListByName — not found for:", list_name);
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -69,6 +61,8 @@ export default async function handler(req, res) {
   if (!contact_id || !import_code || !list_name) {
     return res.status(400).json({ error: "Champs manquants: contact_id, import_code, list_name" });
   }
+
+  console.log("START — contact_id:", contact_id, "list_name:", list_name, "token_length:", HUBSPOT_TOKEN?.length);
 
   try {
     await sleep(Math.random() * 500);
@@ -85,7 +79,6 @@ export default async function handler(req, res) {
         "POST",
         { name: list_name, dynamic: false }
       );
-
       const rawCreate = await createRes.text();
       let created = {};
       try { created = JSON.parse(rawCreate); } catch {}
@@ -96,7 +89,7 @@ export default async function handler(req, res) {
         listJustCreated = true;
         console.log("Step 2 — created listId:", listId);
       } else {
-        console.log("Step 2 — create failed, retrying search...");
+        // Race condition → retry
         for (let attempt = 1; attempt <= 5; attempt++) {
           await sleep(600 * attempt);
           listId = await findListByName(list_name);
