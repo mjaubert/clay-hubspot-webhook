@@ -11,6 +11,9 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Délai aléatoire pour éviter la race condition entre instances parallèles
+    await new Promise(r => setTimeout(r, Math.random() * 1000));
+
     // ── 1. Cherche la liste existante via API v1 ─────────────────────────────
     let listId = null;
     let listJustCreated = false;
@@ -50,16 +53,28 @@ export default async function handler(req, res) {
       console.log("Create status:", createRes.status, JSON.stringify(created));
 
       // Si la liste existe déjà (race condition entre instances parallèles)
-      if (createRes.status === 400 && created.subCategory === "ILS.DUPLICATE_LIST_NAMES") {
-        // Refetch pour récupérer le listId
-        const refetchRes = await fetch(
-          `https://api.hubapi.com/contacts/v1/lists?count=250`,
-          { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } }
-        );
-        const refetchData = await refetchRes.json();
-        const existing = refetchData.lists?.find(l => l.name?.trim() === list_name?.trim());
-        listId = existing?.listId;
-        console.log("Refetched listId after duplicate:", listId);
+      if (createRes.status === 400 || createRes.status === 409) {
+        // Attendre un peu puis refetch
+        await new Promise(r => setTimeout(r, 500));
+        let refetchOffset = 0;
+        let refetchFound = false;
+        while (!refetchFound) {
+          const refetchRes = await fetch(
+            `https://api.hubapi.com/contacts/v1/lists?count=250&offset=${refetchOffset}`,
+            { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } }
+          );
+          const refetchData = await refetchRes.json();
+          const existing = refetchData.lists?.find(l => l.name?.trim() === list_name?.trim());
+          if (existing) {
+            listId = existing.listId;
+            console.log("Refetched listId after duplicate:", listId);
+            refetchFound = true;
+          } else if (!refetchData["has-more"]) {
+            break;
+          } else {
+            refetchOffset += 250;
+          }
+        }
       } else {
         listId = created.listId;
         listJustCreated = true;
