@@ -74,7 +74,7 @@ export default async function handler(req, res) {
     }
 
     // ── 2. Ajouter le contact à la liste (API v3) ─────────────────────────────
-    await fetch(`https://api.hubapi.com/crm/v3/lists/${listId}/memberships/add`, {
+    const addRes = await fetch(`https://api.hubapi.com/crm/v3/lists/${listId}/memberships/add`, {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${HUBSPOT_TOKEN}`,
@@ -82,6 +82,8 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify([parseInt(contact_id)])
     });
+    const addData = await addRes.json();
+    console.log("HubSpot add member response:", JSON.stringify(addData));
 
     // ── 3. Construire l'URL HubSpot de la liste ───────────────────────────────
     const list_url = `https://app.hubspot.com/contacts/${HUBSPOT_ACCOUNT_ID}/lists/${listId}`;
