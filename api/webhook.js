@@ -1,86 +1,55 @@
-// Reçoit le webhook Clay, crée la liste HubSpot (1 seule fois par import_code),
-// ajoute les contacts, puis renvoie un webhook de confirmation à Clay.
-
 const HUBSPOT_TOKEN = process.env.HUBSPOT_TOKEN;
 const HUBSPOT_ACCOUNT_ID = process.env.HUBSPOT_ACCOUNT_ID;
 const CLAY_WEBHOOK_URL = process.env.CLAY_WEBHOOK_URL;
 
-// Cache en mémoire pour éviter de recréer la liste pendant le batch
 const listCache = {};
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   const { contact_id, import_code, list_name } = req.body;
-
   if (!contact_id || !import_code || !list_name) {
-    return res.status(400).json({
-      error: "Champs manquants",
-      required: ["contact_id", "import_code", "list_name"]
-    });
+    return res.status(400).json({ error: "Champs manquants: contact_id, import_code, list_name" });
   }
 
   try {
-    // ── 1. Récupérer ou créer la liste ──────────────────────────────────────
+    // ── 1. Récupérer ou créer la liste via API v1 ────────────────────────────
     let listId = listCache[import_code];
 
     if (!listId) {
-      // Cherche si la liste existe déjà (API v3)
+      // Cherche si la liste existe déjà (API v1)
       const searchRes = await fetch(
-        `https://api.hubapi.com/crm/v3/lists/search`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${HUBSPOT_TOKEN}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            query: list_name,
-            count: 50,
-            offset: 0,
-            processingTypes: ["MANUAL"]
-          })
-        }
+        `https://api.hubapi.com/contacts/v1/lists?count=250`,
+        { headers: { Authorization: `Bearer ${HUBSPOT_TOKEN}` } }
       );
       const searchData = await searchRes.json();
-      console.log("HubSpot list search:", JSON.stringify(searchData?.lists?.map(l => l.name)));
-      // Comparaison exacte du nom (trim pour éviter les espaces parasites)
+      console.log("Search status:", searchRes.status);
       const existing = searchData.lists?.find(l => l.name?.trim() === list_name?.trim());
-      if (existing) {
-        // ilsListId est l'ID utilisé par l'API v1 pour ajouter des membres
-        listId = existing.ilsListId || existing.listId;
-        console.log("Found existing listId:", listId, "ilsListId:", existing.ilsListId, "listId:", existing.listId);
-      }
 
       if (existing) {
         listId = existing.listId;
+        console.log("Found existing list:", listId, existing.name);
       } else {
-        // Crée la liste (API v3)
-        const createRes = await fetch("https://api.hubapi.com/crm/v3/lists/", {
+        // Crée la liste via API v1
+        const createRes = await fetch("https://api.hubapi.com/contacts/v1/lists", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${HUBSPOT_TOKEN}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
-            name: list_name,
-            objectTypeId: "0-1",
-            processingType: "MANUAL"
-          })
+          body: JSON.stringify({ name: list_name, dynamic: false })
         });
         const created = await createRes.json();
-        console.log("HubSpot create list response:", JSON.stringify(created));
-        // l'ilsListId est l'ID utilisé par l'API v1 pour ajouter des membres
-        listId = created?.list?.ilsListId || created?.list?.listId || created?.listId;
-        if (!listId) throw new Error("HubSpot list creation failed: " + JSON.stringify(created));
+        console.log("Create status:", createRes.status, "response:", JSON.stringify(created));
+        listId = created.listId;
+        if (!listId) throw new Error("List creation failed: " + JSON.stringify(created));
         console.log("Created listId:", listId);
       }
 
       listCache[import_code] = listId;
     }
 
-    // ── 2. Ajouter le contact à la liste (API v3) ─────────────────────────────
-    // API v1 pour l'ajout de contacts — plus fiable que v3
+    // ── 2. Ajouter le contact via API v1 ─────────────────────────────────────
     console.log("Adding contact", contact_id, "to listId:", listId);
     const addRes = await fetch(`https://api.hubapi.com/contacts/v1/lists/${listId}/add`, {
       method: "POST",
@@ -91,42 +60,24 @@ export default async function handler(req, res) {
       body: JSON.stringify({ vids: [parseInt(contact_id)] })
     });
     const addText = await addRes.text();
-    console.log("Add status:", addRes.status, "body:", addText.substring(0, 500));
+    console.log("Add status:", addRes.status, "body:", addText.substring(0, 300));
 
-    // ── 3. Construire l'URL HubSpot de la liste ───────────────────────────────
+    // ── 3. URL HubSpot de la liste ────────────────────────────────────────────
     const list_url = `https://app.hubspot.com/contacts/${HUBSPOT_ACCOUNT_ID}/lists/${listId}`;
 
-    // ── 4. Renvoyer le webhook de confirmation à Clay ─────────────────────────
-    await fetch(CLAY_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        import_code,
-        list_name,
-        list_id: listId,
-        list_url,
-        contact_id,
-        status: "success"
-      })
-    });
+    // ── 4. Webhook retour Clay ────────────────────────────────────────────────
+    if (CLAY_WEBHOOK_URL) {
+      await fetch(CLAY_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ import_code, list_name, list_id: listId, list_url, contact_id, status: "success" })
+      });
+    }
 
     return res.status(200).json({ success: true, list_id: listId, list_url });
 
   } catch (err) {
-    console.error(err);
-
-    // Notifie Clay en cas d'erreur aussi
-    await fetch(CLAY_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        import_code,
-        contact_id,
-        status: "error",
-        error: err.message
-      })
-    }).catch(() => {});
-
+    console.error("Error:", err.message);
     return res.status(500).json({ error: err.message });
   }
 }
