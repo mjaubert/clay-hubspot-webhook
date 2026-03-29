@@ -79,16 +79,15 @@ export default async function handler(req, res) {
     }
 
     // ── 2. Ajouter le contact à la liste (API v3) ─────────────────────────────
+    // API v1 pour l'ajout de contacts — plus fiable que v3
     console.log("Adding contact", contact_id, "to listId:", listId);
-    const addUrl = `https://api.hubapi.com/crm/v3/lists/${listId}/memberships/add`;
-    console.log("Add URL:", addUrl);
-    const addRes = await fetch(addUrl, {
-      method: "PUT",
+    const addRes = await fetch(`https://api.hubapi.com/contacts/v1/lists/${listId}/add`, {
+      method: "POST",
       headers: {
         Authorization: `Bearer ${HUBSPOT_TOKEN}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify([parseInt(contact_id)])
+      body: JSON.stringify({ vids: [parseInt(contact_id)] })
     });
     const addText = await addRes.text();
     console.log("Add status:", addRes.status, "body:", addText.substring(0, 500));
