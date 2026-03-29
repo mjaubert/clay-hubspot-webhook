@@ -36,14 +36,16 @@ export default async function handler(req, res) {
           },
           body: JSON.stringify({
             query: list_name,
-            count: 10,
+            count: 50,
             offset: 0,
             processingTypes: ["MANUAL"]
           })
         }
       );
       const searchData = await searchRes.json();
-      const existing = searchData.lists?.find(l => l.name === list_name);
+      console.log("HubSpot list search:", JSON.stringify(searchData?.lists?.map(l => l.name)));
+      // Comparaison exacte du nom (trim pour éviter les espaces parasites)
+      const existing = searchData.lists?.find(l => l.name?.trim() === list_name?.trim());
 
       if (existing) {
         listId = existing.listId;
